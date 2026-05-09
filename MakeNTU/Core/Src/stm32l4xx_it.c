@@ -253,7 +253,7 @@ void DMA1_Channel1_IRQHandler(void)
 }
 
 #if (APP_USE_WS2812_JDG != 0) && (APP_WS2812_USE_PWM_DMA != 0)
-void DMA1_Channel5_IRQHandler(void)
+void DMA1_Channel3_IRQHandler(void)
 {
   App_Ws2812_PwmDmaIrqHandler();
 }

@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "title": "",
+  "audio": "..\\..\\..\\..\\..\\..\\Downloads\\Bruno Mars - 24K Magic (Official Music Video).mp3",
+  "audio_offset_ms": 0,
+  "notes": [
+    {
+      "t_ms": 24768,
+      "kind": "don"
+    },
+    {
+      "t_ms": 25337,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 25866,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 25866,
+      "kind": "don"
+    },
+    {
+      "t_ms": 26992,
+      "kind": "don"
+    },
+    {
+      "t_ms": 28148,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 29249,
+      "kind": "don"
+    },
+    {
+      "t_ms": 29802,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 30391,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 30391,
+      "kind": "don"
+    },
+    {
+      "t_ms": 31492,
+      "kind": "don"
+    },
+    {
+      "t_ms": 32092,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 32643,
+      "kind": "don"
+    },
+    {
+      "t_ms": 32659,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 33731,
+      "kind": "don"
+    },
+    {
+      "t_ms": 36451,
+      "kind": "don"
+    },
+    {
+      "t_ms": 36467,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 37627,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 38680,
+      "kind": "don"
+    },
+    {
+      "t_ms": 39302,
+      "kind": "don"
+    },
+    {
+      "t_ms": 39302,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 40927,
+      "kind": "don"
+    },
+    {
+      "t_ms": 41561,
+      "kind": "don"
+    },
+    {
+      "t_ms": 41561,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 42630,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 42647,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43267,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43267,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 43904,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 44937,
+      "kind": "don"
+    },
+    {
+      "t_ms": 46077,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 46647,
+      "kind": "don"
+    },
+    {
+      "t_ms": 47216,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 48325,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 49408,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 50526,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 51074,
+      "kind": "don"
+    },
+    {
+      "t_ms": 51641,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 52256,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 52822,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 53934,
+      "kind": "don"
+    },
+    {
+      "t_ms": 55069,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 56151,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 56772,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 57298,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 57298,
+      "kind": "don"
+    },
+    {
+      "t_ms": 58412,
+      "kind": "don"
+    },
+    {
+      "t_ms": 59561,
+      "kind": "don"
+    },
+    {
+      "t_ms": 59578,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 60691,
+      "kind": "don"
+    },
+    {
+      "t_ms": 60707,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 61272,
+      "kind": "don"
+    },
+    {
+      "t_ms": 61288,
+      "kind": "ka"
+    }
+  ]
+}

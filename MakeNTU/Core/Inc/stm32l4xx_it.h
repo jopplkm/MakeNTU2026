@@ -62,7 +62,7 @@ void EXTI15_10_IRQHandler(void);
 void DMA1_Channel1_IRQHandler(void);
 
 #if (APP_USE_WS2812_JDG != 0) && (APP_WS2812_USE_PWM_DMA != 0)
-void DMA1_Channel5_IRQHandler(void);
+void DMA1_Channel3_IRQHandler(void);
 #endif
 
 void EXTI1_IRQHandler(void);

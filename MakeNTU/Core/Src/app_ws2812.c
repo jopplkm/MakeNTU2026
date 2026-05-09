@@ -284,7 +284,7 @@ static void ws_tim3_dma_hw_init(void)
   TIM3->CR1 = TIM_CR1_ARPE;
   TIM3->DIER = 0U;
 
-  hdma_ws2812.Instance = DMA1_Channel5;
+  hdma_ws2812.Instance = DMA1_Channel3;
 #if defined(DMAMUX1)
   hdma_ws2812.Init.Request = DMA_REQUEST_TIM3_UP;
 #else
@@ -307,8 +307,8 @@ static void ws_tim3_dma_hw_init(void)
   hdma_ws2812.XferCpltCallback = ws2812_dma_tc;
   hdma_ws2812.XferErrorCallback = ws2812_dma_err;
 
-  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 6, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
   s_pwm_ready = 1U;
 }
 
