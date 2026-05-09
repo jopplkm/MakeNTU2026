@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rhythm chart editor: load MP3, play/pause, scrub timeline, place don/ka notes, save JSON.
+Rhythm chart editor: load MP3, play/pause, scrub timeline, place don/ka/both notes, save JSON.
 
 Uses same chart format as taiko_pygame.py (see makentu_chart.py).
 
@@ -13,7 +13,7 @@ Keys:
   Ctrl+S  Save (automatic path under charts folder unless already opened)
           | Ctrl+Shift+S  Save as… (file dialog / other folder)
   Space   Pause/play | Click/drag timeline to seek
-  Z       Place DON (red) at playhead | X  Place KA (blue)
+  Z       Place DON (red) at playhead | X  Place KA (blue) | C  Place BOTH (don+ka together)
   Backspace Delete note nearest to playhead (±220 ms)
   [ / ]   Nudge calibration offset −10 ms / +10 ms (stored in chart)
 
@@ -392,6 +392,9 @@ def main() -> None:
                 elif event.key == pygame.K_x and not ctrl:
                     notes.append((play_ms, "ka"))
                     notes.sort(key=lambda x: x[0])
+                elif event.key == pygame.K_c and not ctrl:
+                    notes.append((play_ms, "both"))
+                    notes.sort(key=lambda x: x[0])
                 elif event.key == pygame.K_BACKSPACE:
                     if not notes:
                         pass
@@ -441,7 +444,7 @@ def main() -> None:
             "Ctrl+S saves into folder (shown below); Ctrl+Shift+S saves elsewhere via dialog",
             "Ctrl+O Open MP3   Ctrl+E Open chart",
             "Space Play/Pause — timeline: click/drag to seek",
-            "Z = Don (red)   X = Ka (blue)   Backspace = delete nearest   ←/→ seek ±1s",
+            "Z = Don (red)   X = Ka (blue)   C = Both (purple, two drums)   Backspace = delete nearest   ←/→ seek ±1s",
             "[ ] = calibration offset ms (saved in JSON, used in game)",
         ]:
             screen.blit(font.render(line, True, (220, 215, 235)), (16, y))
@@ -508,8 +511,13 @@ def main() -> None:
             if transport.duration_ms <= 1:
                 continue
             nx = margin + int(inner_w * (t / max(1, transport.duration_ms - 1)))
-            col = (220, 70, 70) if k == "don" else (70, 130, 240)
-            pygame.draw.line(screen, col, (nx, note_top), (nx, tl_y + tl_h + 14), 2)
+            if k == "don":
+                col = (220, 70, 70)
+            elif k == "ka":
+                col = (70, 130, 240)
+            else:
+                col = (200, 100, 220)
+            pygame.draw.line(screen, col, (nx, note_top), (nx, tl_y + tl_h + 14), 3 if k == "both" else 2)
 
         pygame.display.flip()
         clock.tick(60)

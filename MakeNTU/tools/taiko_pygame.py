@@ -13,11 +13,15 @@ Run Python first, then power/connect the board (same port as APP_WIFI_REMOTE_POR
   python taiko_pygame.py
   python taiko_pygame.py --port 8002 --no-tcp   # keyboard only
   python taiko_pygame.py --chart mysong.json    # custom chart + MP3 path inside JSON
+
+Chart JSON may include ``kind: "both"`` (don + ka within ~55 ms, each near the beat).
+Keyboard: C inserts don+ka at once for testing ``both`` notes (or hit Space and X very close).
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import os
 import queue
 import re
@@ -43,7 +47,7 @@ def strike_from_stm32_hit_line(text: str) -> str | None:
         return "ka"
     return None
 
-# Beat chart: (time_ms from song start, kind: "don" | "ka")
+# Beat chart: (time_ms from song start, kind: "don" | "ka" | "both")
 # EMG / Space counts as "don". Key K = ka (optional second drum on keyboard).
 DEMO_CHART: list[tuple[int, str]] = [
     (1800, "don"),
@@ -61,9 +65,10 @@ DEMO_CHART: list[tuple[int, str]] = [
     (11400, "don"),
     (12200, "ka"),
     (13000, "don"),
+    (13800, "both"),
 ]
 
-SONG_LENGTH_MS_DEFAULT = 14500
+SONG_LENGTH_MS_DEFAULT = 15300
 
 
 def _make_game_fonts() -> tuple[pygame.font.Font, pygame.font.Font]:
@@ -94,6 +99,10 @@ def _make_game_fonts() -> tuple[pygame.font.Font, pygame.font.Font]:
 WINDOW_PERFECT = 70
 WINDOW_GOOD = 130
 WINDOW_MISS_PAST = 160
+# "both" notes: don + ka must fall within this many ms of each other (any order)
+WINDOW_DUAL_SPREAD_MS = 55
+# Keep recent strikes for pairing across TCP / frame boundaries
+RECENT_STRIKE_PRUNE_MS = 220
 
 # Scroll: judgement line x; notes move right -> left
 JUDGE_X = 220
@@ -156,6 +165,7 @@ class HitTrace:
 class GameState:
     notes: list[Note] = field(default_factory=list)
     hit_traces: list[HitTrace] = field(default_factory=list)
+    recent_strikes: list[tuple[int, str]] = field(default_factory=list)  # (chart_ms, "don"|"ka")
     t0: int = 0
     score: int = 0
     combo: int = 0
@@ -235,6 +245,74 @@ def tcp_listener(
         pass
 
 
+def prune_recent_strikes(state: GameState, chart_ms: int) -> None:
+    lo = chart_ms - RECENT_STRIKE_PRUNE_MS
+    state.recent_strikes = [(t, k) for t, k in state.recent_strikes if t >= lo]
+
+
+def remove_first_strike(buf: list[tuple[int, str]], t_ms: int, kind: str) -> None:
+    for i, (tt, kk) in enumerate(buf):
+        if tt == t_ms and kk == kind:
+            buf.pop(i)
+            return
+
+
+def try_judge_dual(
+    state: GameState,
+    dual_consumed: Counter[tuple[int, str]],
+) -> str | None:
+    """
+    Match a 'both' note using one don and one ka in recent_strikes within WINDOW_DUAL_SPREAD_MS.
+    Each limb must be within WINDOW_GOOD of the note's t_hit; judgement uses average strike time.
+    """
+    best_n: Note | None = None
+    best_td = best_tk = 0
+    best_d_avg = 10**9
+    for n in state.notes:
+        if n.hit_result is not None or n.kind != "both":
+            continue
+        don_times = [t for t, k in state.recent_strikes if k == "don"]
+        ka_times = [t for t, k in state.recent_strikes if k == "ka"]
+        for td in don_times:
+            for tk in ka_times:
+                if abs(td - tk) > WINDOW_DUAL_SPREAD_MS:
+                    continue
+                if abs(td - n.t_hit) > WINDOW_GOOD or abs(tk - n.t_hit) > WINDOW_GOOD:
+                    continue
+                avg = (td + tk) // 2
+                d_avg = abs(avg - n.t_hit)
+                if d_avg < best_d_avg:
+                    best_d_avg = d_avg
+                    best_n = n
+                    best_td, best_tk = td, tk
+    if best_n is None:
+        return None
+    if best_d_avg <= WINDOW_PERFECT:
+        label = "perfect"
+    elif best_d_avg <= WINDOW_GOOD:
+        label = "good"
+    else:
+        return None
+    best_n.hit_result = label
+    state.counts[label] += 1
+    pts = 300 if label == "perfect" else 150
+    state.score += pts + state.combo * 2
+    state.combo += 1
+    state.max_combo = max(state.max_combo, state.combo)
+    avg = (best_td + best_tk) // 2
+    strike_x = JUDGE_X + (best_n.t_hit - avg) * PIXELS_PER_MS
+    err_ms = avg - best_n.t_hit
+    born = pygame.time.get_ticks()
+    state.hit_traces.append(HitTrace(x=strike_x, err_ms=err_ms, kind="both", born=born))
+    if len(state.hit_traces) > HIT_TRACE_MAX:
+        state.hit_traces = state.hit_traces[-HIT_TRACE_MAX:]
+    remove_first_strike(state.recent_strikes, best_td, "don")
+    remove_first_strike(state.recent_strikes, best_tk, "ka")
+    dual_consumed[(best_td, "don")] += 1
+    dual_consumed[(best_tk, "ka")] += 1
+    return label
+
+
 def try_judge(
     state: GameState,
     now_ms: int,
@@ -245,6 +323,8 @@ def try_judge(
     best_delta = 10**9
     for n in state.notes:
         if n.hit_result is not None:
+            continue
+        if n.kind == "both":
             continue
         if strike_kind == "don" and n.kind == "ka":
             continue
@@ -292,6 +372,39 @@ def update_misses(state: GameState, now_ms: int) -> bool:
     return any_miss
 
 
+def apply_chart_strikes(
+    state: GameState,
+    chart_ms: int,
+    incoming: list[tuple[int, str]],
+) -> tuple[str | None, bool]:
+    """
+    Buffer strikes, resolve ``both`` (don+ka pair), then single don/ka notes.
+    Returns (latest judgement label if any, whether any strike was received).
+    """
+    prune_recent_strikes(state, chart_ms)
+    for t_ms, sk in incoming:
+        state.recent_strikes.append((t_ms, sk))
+    prune_recent_strikes(state, chart_ms)
+    dual_consumed: Counter[tuple[int, str]] = Counter()
+    last_label: str | None = None
+    while True:
+        j = try_judge_dual(state, dual_consumed)
+        if j is None:
+            break
+        last_label = j
+        tcp_send_jdg(j)
+    for t_ms, sk in incoming:
+        key = (t_ms, sk)
+        if dual_consumed[key] > 0:
+            dual_consumed[key] -= 1
+            continue
+        j = try_judge(state, t_ms, sk)
+        if j is not None:
+            last_label = j
+            tcp_send_jdg(j)
+    return last_label, bool(incoming)
+
+
 def draw_game(
     screen: pygame.Surface,
     font: pygame.font.Font,
@@ -314,9 +427,12 @@ def draw_game(
         if n.kind == "don":
             color = (220, 60, 60)
             edge = (255, 200, 200)
-        else:
+        elif n.kind == "ka":
             color = (60, 120, 220)
             edge = (200, 220, 255)
+        else:
+            color = (190, 95, 215)
+            edge = (255, 230, 255)
         if n.hit_result == "miss":
             color = tuple(c // 3 for c in color)
         pygame.draw.circle(screen, color, (x, cy), NOTE_RADIUS)
@@ -331,8 +447,10 @@ def draw_game(
         ix = int(round(t.x))
         if t.kind == "don":
             rgb = (255, 140, 140)
-        else:
+        elif t.kind == "ka":
             rgb = (140, 190, 255)
+        else:
+            rgb = (210, 140, 255)
         col = tuple(min(255, int(c * (0.55 + 0.45 * fade))) for c in rgb)
         pygame.draw.line(screen, col, (JUDGE_X, cy), (ix, cy), max(2, int(3 * fade + 0.5)))
         pygame.draw.circle(screen, col, (ix, cy), max(4, int(9 * fade + 0.5)), 2)
@@ -348,8 +466,10 @@ def draw_game(
         ix = int(round(t.x))
         if t.kind == "don":
             rgb = (255, 140, 140)
-        else:
+        elif t.kind == "ka":
             rgb = (140, 190, 255)
+        else:
+            rgb = (210, 140, 255)
         col = tuple(min(255, int(c * (0.55 + 0.45 * fade))) for c in rgb)
         tag = font.render(f"{t.err_ms:+d} ms", True, col)
         label_rows.append((t.born, ix, tag))
@@ -491,7 +611,7 @@ def main() -> None:
             "Run on a PC with a display or unset SDL_VIDEODRIVER.",
             flush=True,
         )
-    pygame.display.set_caption("MakeNTU Taiko — hit:a0 / hit:a1 + Space/X")
+    pygame.display.set_caption("MakeNTU Taiko — a0/a1 + Space/X + C (both)")
     screen = pygame.display.set_mode((960, 540))
     clock = pygame.time.Clock()
     font, big_font = _make_game_fonts()
@@ -575,7 +695,7 @@ def main() -> None:
             screen.fill((20, 18, 30))
             lines = [
                 f"Chart: {chart_label}",
-                "點視窗後按鍵或左鍵開始  ·  a0 don / a1 ka / Space / X",
+                "點視窗後按鍵或左鍵開始  ·  a0 don / a1 ka / Space / X / C 同時雙打",
             ]
             if args.title_autostart_sec > 0.0:
                 lines.append(f"{args.title_autostart_sec:g}s 後自動開始")
@@ -602,21 +722,13 @@ def main() -> None:
         elapsed = now_wall - state.t0
         chart_ms = elapsed + audio_offset_ms
 
+        incoming: list[tuple[int, str]] = []
         while True:
             try:
                 strike = hit_queue.get_nowait()
             except queue.Empty:
                 break
-            j = try_judge(state, chart_ms, strike)
-            if j:
-                hit_flash_ms = 18
-                last_judge = j
-                judge_until_ms = now_wall + 380
-                tcp_send_jdg(j)
-            else:
-                hit_flash_ms = 6
-                # No playable note in window (do not confuse with timing miss).
-                judge_until_ms = now_wall + 220
+            incoming.append((chart_ms, strike))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -628,25 +740,21 @@ def main() -> None:
                         last_judge = None
                     continue
                 if event.key == pygame.K_SPACE:
-                    j = try_judge(state, chart_ms, "don")
-                    if j:
-                        last_judge = j
-                        judge_until_ms = now_wall + 380
-                        hit_flash_ms = 18
-                        tcp_send_jdg(j)
-                    else:
-                        hit_flash_ms = 8
-                        judge_until_ms = now_wall + 180
+                    incoming.append((chart_ms, "don"))
                 elif event.key == pygame.K_x:
-                    j = try_judge(state, chart_ms, "ka")
-                    if j:
-                        last_judge = j
-                        judge_until_ms = now_wall + 380
-                        hit_flash_ms = 18
-                        tcp_send_jdg(j)
-                    else:
-                        hit_flash_ms = 8
-                        judge_until_ms = now_wall + 180
+                    incoming.append((chart_ms, "ka"))
+                elif event.key == pygame.K_c:
+                    incoming.append((chart_ms, "don"))
+                    incoming.append((chart_ms, "ka"))
+
+        j_combined, any_strike = apply_chart_strikes(state, chart_ms, incoming)
+        if j_combined:
+            last_judge = j_combined
+            judge_until_ms = now_wall + 380
+            hit_flash_ms = 18
+        elif any_strike:
+            hit_flash_ms = 6
+            judge_until_ms = now_wall + 220
 
         if update_misses(state, chart_ms):
             last_judge = "miss"

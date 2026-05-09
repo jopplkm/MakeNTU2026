@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "title": "",
+  "audio": "..\\..\\..\\..\\..\\..\\Downloads\\Bruno Mars - 24K Magic (Official Music Video).mp3",
+  "audio_offset_ms": 0,
+  "notes": [
+    {
+      "t_ms": 2466,
+      "kind": "don"
+    },
+    {
+      "t_ms": 3481,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 4384,
+      "kind": "both"
+    },
+    {
+      "t_ms": 5349,
+      "kind": "both"
+    },
+    {
+      "t_ms": 6164,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 6702,
+      "kind": "don"
+    },
+    {
+      "t_ms": 7792,
+      "kind": "don"
+    },
+    {
+      "t_ms": 8344,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 9046,
+      "kind": "both"
+    },
+    {
+      "t_ms": 11662,
+      "kind": "ka"
+    }
+  ]
+}

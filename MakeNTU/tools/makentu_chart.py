@@ -7,10 +7,11 @@ Format (UTF-8 JSON):
   "title": "...",
   "audio": "relative/or/absolute/path/to/track.mp3",
   "audio_offset_ms": 0,
-  "notes": [ {"t_ms": 1500, "kind": "don"}, {"t_ms": 1620, "kind": "ka"} ]
+  "notes": [ {"t_ms": 1500, "kind": "don"}, {"t_ms": 1620, "kind": "ka"}, {"t_ms": 2000, "kind": "both"} ]
 }
 
-t_ms: milliseconds from start of MP3 playback; kind: "don" | "ka"
+t_ms: milliseconds from start of MP3 playback; kind: "don" | "ka" | "both"
+  ("both" = don + ka within a short time window at that beat; see taiko_pygame.py)
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def normalize_chart_notes(notes_raw: Any) -> list[tuple[int, str]]:
         except (KeyError, TypeError, ValueError) as e:
             raise ChartParseError(f"notes[{i}].t_ms invalid") from e
         kind = str(n.get("kind", "don")).lower()
-        if kind not in ("don", "ka"):
+        if kind not in ("don", "ka", "both"):
             kind = "don"
         out.append((tm, kind))
     out.sort(key=lambda x: x[0])
