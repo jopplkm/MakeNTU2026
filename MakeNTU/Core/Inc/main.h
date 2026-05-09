@@ -225,8 +225,8 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
-/** DMA circular buffer length (12-bit samples on ARD_A0 / ADC1_IN14). */
-#define APP_ADC_DMA_BUFFER_SAMPLES 128U
+/** Total uint16 DMA slots for ADC scan (pairs: rank1=A0 ADC1_IN14, rank2=A1 ADC1_IN13). Must be even. */
+#define APP_ADC_DMA_BUFFER_SAMPLES 256U
 /** ADC fixed-rate sampling target for EMG acquisition. */
 #define APP_ADC_SAMPLE_RATE_HZ 1000U
 /** How often to transmit processed value to PC. */

@@ -66,13 +66,13 @@ ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 static uint16_t adc_dma_buffer[APP_ADC_DMA_BUFFER_SAMPLES];
-static uint16_t s_hit_threshold_high = APP_EMG_HIT_THRESHOLD_HIGH;
-static uint16_t s_hit_threshold_low = APP_EMG_HIT_THRESHOLD_LOW;
+static uint16_t s_hit_thr_high[2] = { APP_EMG_HIT_THRESHOLD_HIGH, APP_EMG_HIT_THRESHOLD_HIGH };
+static uint16_t s_hit_thr_low[2] = { APP_EMG_HIT_THRESHOLD_LOW, APP_EMG_HIT_THRESHOLD_LOW };
 static volatile uint8_t s_calib_request = 0U;
 static uint8_t s_calibrating = 0U;
 static uint32_t s_calib_start_ms = 0U;
 static uint32_t s_calib_last_report_ms = 0U;
-static uint64_t s_calib_sum = 0U;
+static uint64_t s_calib_sum[2] = { 0U, 0U };
 static uint32_t s_calib_count = 0U;
 static uint32_t s_effort_event_id = 0U;
 
@@ -196,57 +196,81 @@ static WIFI_Status_t App_WifiSendAll(const uint8_t *buf, uint16_t len, uint32_t 
 }
 #endif
 
-static uint16_t App_AdcBufferAvg(void)
+/**
+ * Latest interleaved ADC pair (rank1=A0 PC5 IN14, rank2=A1 PC4 IN13).
+ * Applies light IIR smoothing per channel (~same as legacy single-channel).
+ */
+static void App_AdcLatestSmoothed(uint16_t *out_avg0, uint16_t *out_avg1)
 {
-  static int32_t avg_q8 = 0;
+  static int32_t avg_q8[2] = { 0, 0 };
   uint32_t wr = APP_ADC_DMA_BUFFER_SAMPLES - __HAL_DMA_GET_COUNTER(&hdma_adc1);
-  if (wr == 0U)
+
+  if (wr < 2U)
   {
     wr = APP_ADC_DMA_BUFFER_SAMPLES;
   }
-  const uint16_t x = adc_dma_buffer[wr - 1U];
-  avg_q8 += ((((int32_t)x) << 8) - avg_q8) >> 3; /* ~8-sample smoothing */
-  if (avg_q8 < 0)
+
+  wr = ((wr / 2U) * 2U);
+  if (wr < 2U)
   {
-    avg_q8 = 0;
+    wr = APP_ADC_DMA_BUFFER_SAMPLES;
   }
-  if (avg_q8 > (4095 << 8))
+
+  const uint16_t x0 = adc_dma_buffer[wr - 2U];
+  const uint16_t x1 = adc_dma_buffer[wr - 1U];
+
+  for (uint32_t i = 0U; i < 2U; i++)
   {
-    avg_q8 = (4095 << 8);
+    const uint16_t x = (i == 0U) ? x0 : x1;
+    avg_q8[i] += ((((int32_t)x) << 8) - avg_q8[i]) >> 3;
+    if (avg_q8[i] < 0)
+    {
+      avg_q8[i] = 0;
+    }
+    if (avg_q8[i] > (4095 << 8))
+    {
+      avg_q8[i] = (4095 << 8);
+    }
   }
-  return (uint16_t)(avg_q8 >> 8);
+  *out_avg0 = (uint16_t)(avg_q8[0] >> 8);
+  *out_avg1 = (uint16_t)(avg_q8[1] >> 8);
 }
 
-static uint8_t App_EmgHitDetect(uint16_t pulse, uint32_t now_ms)
+static uint8_t App_EmgHitDetectCh(uint8_t ch, uint16_t pulse, uint32_t now_ms)
 {
-  static uint8_t armed = 1U;
-  static uint32_t last_hit_ms = 0U;
-  static uint16_t prev_pulse = 0U;
+  static uint8_t armed[2] = { 1U, 1U };
+  static uint32_t last_hit_ms[2] = { 0U, 0U };
+  static uint16_t prev_pulse[2] = { 0U, 0U };
   uint16_t rise = 0U;
 
-  if (pulse > prev_pulse)
-  {
-    rise = (uint16_t)(pulse - prev_pulse);
-  }
-  prev_pulse = pulse;
-
-  if ((now_ms - last_hit_ms) < APP_EMG_HIT_COOLDOWN_MS)
+  if (ch >= 2U)
   {
     return 0U;
   }
 
-  if (armed != 0U)
+  if (pulse > prev_pulse[ch])
   {
-    if ((pulse >= s_hit_threshold_high) && (rise >= APP_EMG_HIT_MIN_RISE))
+    rise = (uint16_t)(pulse - prev_pulse[ch]);
+  }
+  prev_pulse[ch] = pulse;
+
+  if ((now_ms - last_hit_ms[ch]) < APP_EMG_HIT_COOLDOWN_MS)
+  {
+    return 0U;
+  }
+
+  if (armed[ch] != 0U)
+  {
+    if ((pulse >= s_hit_thr_high[ch]) && (rise >= APP_EMG_HIT_MIN_RISE))
     {
-      armed = 0U;
-      last_hit_ms = now_ms;
+      armed[ch] = 0U;
+      last_hit_ms[ch] = now_ms;
       return 1U;
     }
   }
-  else if (pulse <= s_hit_threshold_low)
+  else if (pulse <= s_hit_thr_low[ch])
   {
-    armed = 1U;
+    armed[ch] = 1U;
   }
 
   return 0U;
@@ -261,8 +285,8 @@ static uint8_t App_UpdateEffortEvent(uint16_t level, uint32_t now_ms, char *out,
   static uint32_t first_high_ms = 0U;
   static uint32_t last_update_ms = 0U;
   static uint32_t below_since_ms = 0U;
-  const uint8_t above_low = (level >= s_hit_threshold_low) ? 1U : 0U;
-  const uint8_t above_high = (level >= s_hit_threshold_high) ? 1U : 0U;
+  const uint8_t above_low = (level >= s_hit_thr_low[0]) ? 1U : 0U;
+  const uint8_t above_high = (level >= s_hit_thr_high[0]) ? 1U : 0U;
   const uint32_t dt = (last_update_ms == 0U) ? APP_ADC_TX_PERIOD_MS : (now_ms - last_update_ms);
   last_update_ms = now_ms;
 
@@ -323,23 +347,25 @@ static uint8_t App_UpdateEffortEvent(uint16_t level, uint32_t now_ms, char *out,
 
 static void App_StartCalibration(uint32_t now_ms)
 {
-  const char *msg = "[CAL] start 10s relax calibration\r\n";
+  const char *msg = "[CAL] start 10s relax — calibrate BOTH A0 + A1 (relax both sensors)\r\n";
   s_calibrating = 1U;
   s_calib_start_ms = now_ms;
   s_calib_last_report_ms = now_ms;
-  s_calib_sum = 0U;
+  s_calib_sum[0] = 0U;
+  s_calib_sum[1] = 0U;
   s_calib_count = 0U;
   (void)HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)strlen(msg), 100U);
 }
 
-static void App_HandleCalibration(uint16_t avg, uint32_t now_ms)
+static void App_HandleCalibration(uint16_t avg0, uint16_t avg1, uint32_t now_ms)
 {
   if (s_calibrating == 0U)
   {
     return;
   }
 
-  s_calib_sum += avg;
+  s_calib_sum[0] += (uint64_t)avg0;
+  s_calib_sum[1] += (uint64_t)avg1;
   s_calib_count++;
 
   if ((now_ms - s_calib_last_report_ms) >= 1000U)
@@ -357,36 +383,37 @@ static void App_HandleCalibration(uint16_t avg, uint32_t now_ms)
 
   if ((now_ms - s_calib_start_ms) >= APP_EMG_CALIBRATION_MS)
   {
-    uint32_t baseline = 0U;
-    uint32_t low = 0U;
-    uint32_t high = 0U;
-    char msg[96];
+    char msg[132];
     s_calibrating = 0U;
 
     if (s_calib_count > 0U)
     {
-      baseline = (uint32_t)(s_calib_sum / s_calib_count);
-    }
-    low = baseline + APP_EMG_LOW_OFFSET;
-    high = baseline + APP_EMG_HIGH_OFFSET;
-    if (low > 4095U)
-    {
-      low = 4095U;
-    }
-    if (high > 4095U)
-    {
-      high = 4095U;
-    }
-    if (high <= low)
-    {
-      high = (low < 4095U) ? (low + 1U) : 4095U;
-    }
+      for (uint32_t c = 0U; c < 2U; c++)
+      {
+        uint32_t baseline = (uint32_t)(s_calib_sum[c] / (uint64_t)s_calib_count);
+        uint32_t low = baseline + APP_EMG_LOW_OFFSET;
+        uint32_t high = baseline + APP_EMG_HIGH_OFFSET;
+        if (low > 4095U)
+        {
+          low = 4095U;
+        }
+        if (high > 4095U)
+        {
+          high = 4095U;
+        }
+        if (high <= low)
+        {
+          high = (low < 4095U) ? (low + 1U) : 4095U;
+        }
+        s_hit_thr_low[c] = (uint16_t)low;
+        s_hit_thr_high[c] = (uint16_t)high;
 
-    s_hit_threshold_low = (uint16_t)low;
-    s_hit_threshold_high = (uint16_t)high;
-    (void)snprintf(msg, sizeof(msg), "[CAL] done base=%lu low=%u high=%u\r\n",
-                   (unsigned long)baseline, (unsigned)s_hit_threshold_low, (unsigned)s_hit_threshold_high);
-    (void)HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)strlen(msg), 100U);
+        (void)snprintf(msg, sizeof(msg), "[CAL] %s base=%lu L=%u H=%u\r\n",
+                       (c == 0U) ? "A0(red)" : "A1(blue)",
+                       (unsigned long)baseline, (unsigned)s_hit_thr_low[c], (unsigned)s_hit_thr_high[c]);
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)strlen(msg), 100U);
+      }
+    }
   }
 }
 
@@ -420,11 +447,11 @@ static void App_ADC_WithDma_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 2;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
@@ -442,13 +469,20 @@ static void App_ADC_WithDma_Init(void)
     Error_Handler();
   }
 
-  /* ARD_A0 on B-L475E-IOT01A2: PC5 = ADC1_IN14 */
+  /* ARD_A0: PC5 = ADC1_IN14  |  ARD_A1: PC4 = ADC1_IN13 (one ADC, scan order per TIM6 tick) */
   sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sConfig.Channel = ADC_CHANNEL_13;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -589,7 +623,7 @@ int main(void)
                                       APP_WIFI_REMOTE_PORT, 0U) == WIFI_STATUS_OK)
         {
           s_wifi_socket = 0;
-          App_DebugUart1("[WiFi] TCP connected -> will mirror A0_avg to socket\r\n");
+          App_DebugUart1("[WiFi] TCP connected -> hit:a0 (red) + hit:a1 (blue)\r\n");
           break;
         }
         HAL_Delay(250);
@@ -632,30 +666,49 @@ int main(void)
     if ((now - last_tx_ms) >= APP_ADC_TX_PERIOD_MS)
     {
       last_tx_ms = now;
-      uint32_t wr = APP_ADC_DMA_BUFFER_SAMPLES - __HAL_DMA_GET_COUNTER(&hdma_adc1);
-      if (wr == 0U)
-      {
-        wr = APP_ADC_DMA_BUFFER_SAMPLES;
-      }
-      const uint16_t avg = App_AdcBufferAvg();
-      App_HandleCalibration(avg, now);
-      const uint8_t hit = (s_calibrating != 0U) ? 0U : App_EmgHitDetect(avg, now);
+      uint16_t avg0 = 0U;
+      uint16_t avg1 = 0U;
+      App_AdcLatestSmoothed(&avg0, &avg1);
+
+      App_HandleCalibration(avg0, avg1, now);
+
+      const uint8_t hit0 = (s_calibrating != 0U) ? 0U : App_EmgHitDetectCh(0U, avg0, now);
+      const uint8_t hit1 = (s_calibrating != 0U) ? 0U : App_EmgHitDetectCh(1U, avg1, now);
+
       char evt_line[96];
-      const uint8_t evt_ready = (s_calibrating != 0U) ? 0U : App_UpdateEffortEvent(avg, now, evt_line, sizeof(evt_line));
-      char hit_line[64];
-      size_t hit_len = 0U;
-      if (hit != 0U)
+      const uint8_t evt_ready = (s_calibrating != 0U) ? 0U : App_UpdateEffortEvent(avg0, now, evt_line, sizeof(evt_line));
+
+      char hit_line[2][72];
+      size_t hit_len[2] = { 0U, 0U };
+
+      if (hit0 != 0U)
       {
-        const int n = snprintf(hit_line, sizeof(hit_line), "hit:1 avg:%4u L:%u H:%u\r\n",
-                               (unsigned)avg, (unsigned)s_hit_threshold_low, (unsigned)s_hit_threshold_high);
+        const int n = snprintf(hit_line[0], sizeof(hit_line[0]),
+                               "hit:a0 avg:%4u L:%u H:%u\r\n",
+                               (unsigned)avg0, (unsigned)s_hit_thr_low[0], (unsigned)s_hit_thr_high[0]);
         if (n > 0)
         {
-          hit_len = ((size_t)n < sizeof(hit_line)) ? (size_t)n : sizeof(hit_line);
+          hit_len[0] = ((size_t)n < sizeof(hit_line[0])) ? (size_t)n : sizeof(hit_line[0]);
         }
       }
-      if (hit_len > 0U)
+      if (hit1 != 0U)
       {
-        (void)HAL_UART_Transmit(&huart1, (uint8_t *)hit_line, (uint16_t)hit_len, 100U);
+        const int n = snprintf(hit_line[1], sizeof(hit_line[1]),
+                               "hit:a1 avg:%4u L:%u H:%u\r\n",
+                               (unsigned)avg1, (unsigned)s_hit_thr_low[1], (unsigned)s_hit_thr_high[1]);
+        if (n > 0)
+        {
+          hit_len[1] = ((size_t)n < sizeof(hit_line[1])) ? (size_t)n : sizeof(hit_line[1]);
+        }
+      }
+
+      if (hit_len[0] > 0U)
+      {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)hit_line[0], (uint16_t)hit_len[0], 100U);
+      }
+      if (hit_len[1] > 0U)
+      {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)hit_line[1], (uint16_t)hit_len[1], 100U);
       }
       if (evt_ready != 0U)
       {
@@ -668,9 +721,13 @@ int main(void)
 #if APP_USE_WIFI
       if (s_wifi_socket >= 0)
       {
-        if (hit_len > 0U)
+        for (uint32_t hi = 0U; hi < 2U; hi++)
         {
-          if (App_WifiSendAll((const uint8_t *)hit_line, (uint16_t)hit_len, 500U) != WIFI_STATUS_OK)
+          if (hit_len[hi] == 0U)
+          {
+            continue;
+          }
+          if (App_WifiSendAll((const uint8_t *)hit_line[hi], (uint16_t)hit_len[hi], 500U) != WIFI_STATUS_OK)
           {
             static uint32_t last_err_ms;
             if ((now - last_err_ms) >= 2000U)
@@ -713,9 +770,13 @@ int main(void)
         }
       }
 #else
-      if (hit_len > 0U)
+      if (hit_len[0] > 0U)
       {
-        (void)HAL_UART_Transmit(&huart3, (uint8_t *)hit_line, (uint16_t)hit_len, 100U);
+        (void)HAL_UART_Transmit(&huart3, (uint8_t *)hit_line[0], (uint16_t)hit_len[0], 100U);
+      }
+      if (hit_len[1] > 0U)
+      {
+        (void)HAL_UART_Transmit(&huart3, (uint8_t *)hit_line[1], (uint16_t)hit_len[1], 100U);
       }
 #endif
     }

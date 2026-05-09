@@ -16,21 +16,30 @@ Keys:
   Z       Place DON (red) at playhead | X  Place KA (blue)
   Backspace Delete note nearest to playhead (±220 ms)
   [ / ]   Nudge calibration offset −10 ms / +10 ms (stored in chart)
+
+Above the seek bar: amplitude waveform (loud = tall) from decoded audio.
 """
 
 from __future__ import annotations
 
 import argparse
+import audioop
+import importlib
 import os
 import sys
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 import pygame
 
+# Optional: mutagen from requirements_taiko.txt — dynamic import avoids Pylance
+# reportMissingImports when that interpreter lacks the package.
+MP3: Optional[Callable[..., Any]] = None
 try:
-    from mutagen.mp3 import MP3
+    _mutagen_mp3 = importlib.import_module("mutagen.mp3")
+    MP3 = getattr(_mutagen_mp3, "MP3", None)
 except ImportError:
-    MP3 = None
+    pass
 
 from tkinter import Tk
 from tkinter import filedialog
@@ -49,6 +58,75 @@ def mp3_duration_ms(path: Path) -> int:
             pass
     snd = pygame.mixer.Sound(str(path))
     return max(1, int(snd.get_length() * 1000.0))
+
+
+def compute_amplitude_envelope(path: Path, num_buckets: int = 1400) -> list[float]:
+    """
+    Decode full file into PCM via pygame.Sound, bucket peak envelopes for waveform display.
+    Buckets align in time order with the timeline (same length as song).
+    """
+    snd = pygame.mixer.Sound(str(path))
+    raw = snd.get_raw()
+    init = pygame.mixer.get_init()
+    if not raw or init is None:
+        return []
+    _freq, fmt, channels = init
+    sw = max(1, abs(fmt) // 8)
+    frame_bytes = sw * channels
+    if frame_bytes <= 0 or len(raw) < frame_bytes:
+        return []
+    n_frames = len(raw) // frame_bytes
+    if n_frames < 2:
+        return [0.2]
+    nb = max(64, min(num_buckets, max(256, n_frames // 600)))
+    norm = float(1 << (8 * sw - 1))
+    peaks: list[float] = []
+    for b in range(nb):
+        f0 = (b * n_frames) // nb
+        f1 = ((b + 1) * n_frames) // nb
+        if f1 <= f0:
+            f1 = min(n_frames, f0 + 1)
+        seg = raw[f0 * frame_bytes : f1 * frame_bytes]
+        if len(seg) < sw:
+            peaks.append(0.0)
+            continue
+        try:
+            if channels >= 2:
+                seg_m = audioop.tomono(seg, sw, 0.5, 0.5)
+            else:
+                seg_m = seg
+            mn, mx = audioop.minmax(seg_m, sw)
+            peak_lin = max(abs(mn), abs(mx)) / norm
+        except Exception:
+            seg_m = (
+                audioop.tomono(seg, sw, 0.5, 0.5)
+                if channels >= 2
+                else seg
+            )
+            rms = audioop.rms(seg_m, sw)
+            peak_lin = min(1.0, rms / (norm * 0.35))
+        peaks.append(min(1.0, peak_lin ** 0.42))
+    return peaks
+
+
+def build_wave_surface(peaks: list[float], width: int, height: int) -> pygame.Surface:
+    surf = pygame.Surface((width, height))
+    surf.fill((42, 40, 52))
+    if len(peaks) < 2 or width <= 1:
+        return surf
+    mid = height // 2
+    nb = len(peaks)
+    hi = mid - 4
+    for x in range(width):
+        t = x * (nb - 1) / max(1, width - 1)
+        i0 = int(t)
+        i1 = min(nb - 1, i0 + 1)
+        ff = t - i0
+        pk = peaks[i0] * (1.0 - ff) + peaks[i1] * ff
+        amp = max(1, int(pk * hi))
+        pygame.draw.line(surf, (108, 188, 232), (x, mid - amp), (x, mid + amp), 1)
+    pygame.draw.line(surf, (65, 62, 78), (0, mid), (width, mid), 1)
+    return surf
 
 
 class Transport:
@@ -202,10 +280,31 @@ def main() -> None:
     title = ""
     audio_offset_ms = 0
     scrubbing = False
+    wave_peaks: list[float] | None = None
+    wave_surface: pygame.Surface | None = None
 
     margin = 48
     tl_y = H - 120
     tl_h = 36
+    wave_h = 78
+    wave_gap = 8
+    wave_y = tl_y - wave_h - wave_gap
+
+    def refresh_waveform() -> None:
+        nonlocal wave_peaks, wave_surface
+        wave_surface = None
+        if audio_path is None or not audio_path.is_file():
+            wave_peaks = None
+            return
+        try:
+            wave_peaks = compute_amplitude_envelope(audio_path)
+            inner = W - 2 * margin
+            if wave_peaks:
+                wave_surface = build_wave_surface(wave_peaks, inner, wave_h)
+        except Exception as e:
+            wave_peaks = None
+            wave_surface = None
+            print(f"[chart editor] waveform: {e}", file=sys.stderr)
 
     def timeline_ms_from_x(x: int) -> int:
         inner = W - 2 * margin
@@ -233,6 +332,7 @@ def main() -> None:
                         p = Path(path)
                         audio_path = p
                         transport.load_file(p)
+                        refresh_waveform()
                         pygame.display.set_caption(f"Chart Editor — {p.name}")
                 elif ctrl and event.key == pygame.K_e:
                     path = pick_file_open("Open chart JSON", [("JSON", "*.json")])
@@ -249,9 +349,12 @@ def main() -> None:
                             if ap is not None and ap.is_file():
                                 audio_path = ap
                                 transport.load_file(ap)
+                                refresh_waveform()
                                 pygame.display.set_caption(f"Chart Editor — {ap.name}")
                             else:
                                 audio_path = None
+                                wave_peaks = None
+                                wave_surface = None
                                 transport.paused = True
                                 pygame.mixer.music.stop()
                                 transport.has_track = notes != []
@@ -313,7 +416,10 @@ def main() -> None:
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
-                if tl_y <= my <= tl_y + tl_h + 20 and margin <= mx <= W - margin:
+                if (
+                    wave_y <= my <= tl_y + tl_h + 20
+                    and margin <= mx <= W - margin
+                ):
                     scrubbing = True
                     transport.seek(timeline_ms_from_x(mx), now)
                     if not transport.paused:
@@ -365,20 +471,45 @@ def main() -> None:
         hud = f"{fmt(play_ms)} / {fmt(transport.duration_ms)}  {'PAUSED' if transport.paused else 'PLAY'}"
         screen.blit(font.render(hud, True, (255, 230, 160)), (16, H - 168))
 
-        pygame.draw.rect(screen, (55, 50, 65), (margin, tl_y, W - 2 * margin, tl_h), border_radius=6)
+        inner_w = W - 2 * margin
+        if wave_surface is not None:
+            screen.blit(wave_surface, (margin, wave_y))
+            pygame.draw.rect(
+                screen,
+                (75, 70, 90),
+                (margin, wave_y, inner_w, wave_h),
+                width=1,
+                border_radius=4,
+            )
+            screen.blit(
+                small.render("Amplitude (volume) — click/drag to seek", True, (150, 190, 210)),
+                (margin, wave_y - 22),
+            )
+        elif audio_path:
+            pygame.draw.rect(
+                screen,
+                (52, 48, 60),
+                (margin, wave_y, inner_w, wave_h),
+                border_radius=4,
+            )
+            screen.blit(small.render("Waveform unavailable", True, (140, 130, 150)), (margin + 12, wave_y + 26))
+
+        pygame.draw.rect(screen, (55, 50, 65), (margin, tl_y, inner_w, tl_h), border_radius=6)
         if transport.duration_ms > 1:
             frac = play_ms / (transport.duration_ms - 1)
-            pw = int((W - 2 * margin) * frac)
+            pw = int(inner_w * frac)
             pygame.draw.rect(screen, (120, 200, 255), (margin, tl_y, pw, tl_h), border_radius=6)
-        px = margin + int((W - 2 * margin) * (play_ms / max(1, transport.duration_ms - 1)))
-        pygame.draw.line(screen, (255, 255, 120), (px, tl_y - 6), (px, tl_y + tl_h + 6), 3)
+        px = margin + int(inner_w * (play_ms / max(1, transport.duration_ms - 1)))
+        playhead_top = wave_y if wave_surface is not None else tl_y - 6
+        pygame.draw.line(screen, (255, 255, 120), (px, playhead_top), (px, tl_y + tl_h + 6), 3)
 
+        note_top = wave_y + 4 if wave_surface is not None else tl_y - 14
         for t, k in notes:
             if transport.duration_ms <= 1:
                 continue
-            nx = margin + int((W - 2 * margin) * (t / max(1, transport.duration_ms - 1)))
+            nx = margin + int(inner_w * (t / max(1, transport.duration_ms - 1)))
             col = (220, 70, 70) if k == "don" else (70, 130, 240)
-            pygame.draw.line(screen, col, (nx, tl_y - 14), (nx, tl_y + tl_h + 14), 2)
+            pygame.draw.line(screen, col, (nx, note_top), (nx, tl_y + tl_h + 14), 2)
 
         pygame.display.flip()
         clock.tick(60)

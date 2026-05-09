@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Taiko-style rhythm game: STM32 WiFi/TCP sends lines like
-  hit:1 avg:1234 L:250 H:400
-Each hit:1 is treated as a drum strike (same as Space for testing).
+Taiko-style rhythm game: STM32 WiFi/TCP drum lines:
+  hit:a0 ...  → red DON (Arduino A0 / PC5 ADC1_IN14)
+  hit:a1 ...  → blue KA (Arduino A1 / PC4 ADC1_IN13)
+Legacy: hit:1 → don ; hit:2 or hit:ka → ka (optional).
 
 Run Python first, then power/connect the board (same port as APP_WIFI_REMOTE_PORT).
 
@@ -31,8 +32,13 @@ from makentu_chart import load_chart_json
 from makentu_chart import resolve_audio_path
 from makentu_chart import song_length_from_notes
 
-# --- Match STM32 format: hit:1 avg:... (main.c snprintf) ---
-HIT_LINE_RE = re.compile(r"hit\s*:\s*1\b", re.IGNORECASE)
+def strike_from_stm32_hit_line(text: str) -> str | None:
+    """Map decoded UART/TCP hit line → 'don' or 'ka' for judgement."""
+    if re.search(r"hit\s*:\s*(a0|don|1)\b", text, re.IGNORECASE):
+        return "don"
+    if re.search(r"hit\s*:\s*(a1|ka|2)\b", text, re.IGNORECASE):
+        return "ka"
+    return None
 
 # Beat chart: (time_ms from song start, kind: "don" | "ka")
 # EMG / Space counts as "don". Key K = ka (optional second drum on keyboard).
@@ -92,6 +98,7 @@ def tcp_listener(
     port: int,
     hit_queue: queue.Queue[str],
     stop_event: threading.Event,
+    tcp_debug: bool = False,
 ) -> None:
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -114,6 +121,7 @@ def tcp_listener(
             except OSError:
                 break
             buf = b""
+            print("[taiko] STM32 TCP client connected.", flush=True)
         assert conn is not None
         try:
             chunk = conn.recv(4096)
@@ -122,11 +130,17 @@ def tcp_listener(
                 conn = None
                 continue
             buf += chunk
+            buf = buf.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 text = line.decode("utf-8", errors="replace").strip()
-                if text and HIT_LINE_RE.search(text):
-                    hit_queue.put("don")
+                if tcp_debug and text:
+                    lw = text.lower()
+                    if lw.startswith("hit") or lw.startswith("evt"):
+                        print(f"[taiko-tcp] {text}", flush=True)
+                sk = strike_from_stm32_hit_line(text) if text else None
+                if sk:
+                    hit_queue.put(sk)
         except TimeoutError:
             continue
         except OSError:
@@ -271,6 +285,18 @@ def main() -> None:
         action="store_true",
         help="Skip title screen; start chart immediately (use if keys seem ignored)",
     )
+    parser.add_argument(
+        "--tcp-debug",
+        action="store_true",
+        help="Log hit:/evt: lines from the board to stderr (verify TCP + newline parsing)",
+    )
+    parser.add_argument(
+        "--title-autostart-sec",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help="Optional: auto-begin chart after SEC seconds on title (default 0 = never; use demos only)",
+    )
     args = parser.parse_args()
 
     chart_notes: list[tuple[int, str]] = list(DEMO_CHART)
@@ -312,7 +338,7 @@ def main() -> None:
             "Run on a PC with a display or unset SDL_VIDEODRIVER.",
             flush=True,
         )
-    pygame.display.set_caption("MakeNTU Taiko — hit:1 / Space don / X ka")
+    pygame.display.set_caption("MakeNTU Taiko — hit:a0 / hit:a1 + Space/X")
     screen = pygame.display.set_mode((960, 540))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 26)
@@ -324,10 +350,17 @@ def main() -> None:
     if not args.no_tcp:
         tcp_thread = threading.Thread(
             target=tcp_listener,
-            args=(args.host, args.port, hit_queue, stop_tcp),
+            args=(args.host, args.port, hit_queue, stop_tcp, args.tcp_debug),
             daemon=True,
         )
         tcp_thread.start()
+
+    def drain_tcp_hits() -> None:
+        while True:
+            try:
+                hit_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def reset_game() -> GameState:
         pygame.mixer.music.stop()
@@ -339,7 +372,17 @@ def main() -> None:
             pygame.mixer.music.play(start=0.0)
         return g
 
-    state = reset_game()
+    def bootstrap_title_state() -> GameState:
+        """Title screen placeholder: chart notes only; no music / clock until gameplay."""
+        g = GameState()
+        g.notes = [Note(t_hit=t, kind=k) for t, k in chart_notes]
+        return g
+
+    pygame.mixer.music.stop()
+    if args.skip_help:
+        state = reset_game()
+    else:
+        state = bootstrap_title_state()
 
     hit_flash_ms = 0
     last_judge: str | None = None
@@ -352,6 +395,7 @@ def main() -> None:
         now_wall = pygame.time.get_ticks()
 
         if showing_help:
+            drain_tcp_hits()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -360,24 +404,36 @@ def main() -> None:
                         running = False
                     else:
                         showing_help = False
+                        drain_tcp_hits()
                         state = reset_game()
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     showing_help = False
+                    drain_tcp_hits()
                     state = reset_game()
-            # Proof the loop is alive; auto-start after 5s so the game never looks "stuck"
-            if showing_help and (now_wall - help_start_ticks) > 5000:
+            title_delay_ms = int(round(max(0.0, args.title_autostart_sec) * 1000.0))
+            if (
+                title_delay_ms > 0
+                and showing_help
+                and ((now_wall - help_start_ticks) >= title_delay_ms)
+            ):
                 showing_help = False
+                drain_tcp_hits()
                 state = reset_game()
             pygame.event.pump()
             screen.fill((20, 18, 30))
             lines = [
                 f"Chart: {chart_label}",
-                "STM32: hit:1 line → DON (red)  |  Space = Don   X = Ka",
-                "藍色(ka)需按鍵 X；請先對 pygame 視窗按一下再按鍵",
+                "校正：可先按 STM32 USER（約10秒放輕鬆）；不必等連上電腦，Wi‑Fi／TCP 不影響校正。",
+                "STM32: hit:a0→紅 don ｜ hit:a1→藍 ka ｜鍵盤 Space / X 也可",
+                "請先對此視窗點一下，再按鍵或滑鼠左鍵開始遊戲（預設不會自動開始）。",
                 "",
-                "Click LEFT mouse here, press any key, or wait 5s to auto-start",
+                (
+                    "偵錯可開 --tcp-debug 看板子行；自動開譜可加 --title-autostart-sec 秒（試玩）。"
+                    if args.title_autostart_sec <= 0.0
+                    else f"已設 --title-autostart-sec {args.title_autostart_sec}s 會自動開譜"
+                ),
                 "",
-                f"TCP {args.host}:{args.port}  ('--no-tcp' if no board)",
+                f"TCP listen {args.host}:{args.port}  |  '--no-tcp' = 不接板子",
             ]
             y_line = 70
             for line in lines:
