@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "title": "",
+  "audio": "..\\..\\..\\..\\MakeNTU\\tools\\emg_rhythm_game\\music\\magpiemusic-action-trailer-promo-rock-513687.mp3",
+  "audio_offset_ms": 0,
+  "notes": [
+    {
+      "t_ms": 3581,
+      "kind": "don"
+    },
+    {
+      "t_ms": 4299,
+      "kind": "don"
+    },
+    {
+      "t_ms": 5075,
+      "kind": "don"
+    },
+    {
+      "t_ms": 5811,
+      "kind": "don"
+    },
+    {
+      "t_ms": 6559,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 7258,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 7977,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 8696,
+      "kind": "ka"
+    }
+  ]
+}
