@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "title": "",
+  "audio": "..\\..\\..\\..\\MakeNTU\\tools\\emg_rhythm_game\\music\\magpiemusic-action-trailer-promo-rock-513687.mp3",
+  "audio_offset_ms": 0,
+  "notes": [
+    {
+      "t_ms": 6348,
+      "kind": "don"
+    },
+    {
+      "t_ms": 7706,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 9141,
+      "kind": "don"
+    },
+    {
+      "t_ms": 10591,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 11011,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 11427,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 11812,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 15214,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 15214,
+      "kind": "don"
+    },
+    {
+      "t_ms": 19454,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 19471,
+      "kind": "don"
+    },
+    {
+      "t_ms": 22477,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 22493,
+      "kind": "don"
+    },
+    {
+      "t_ms": 25325,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 26424,
+      "kind": "don"
+    },
+    {
+      "t_ms": 27240,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 27976,
+      "kind": "don"
+    },
+    {
+      "t_ms": 28341,
+      "kind": "don"
+    },
+    {
+      "t_ms": 29327,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 30431,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 30448,
+      "kind": "don"
+    },
+    {
+      "t_ms": 31213,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 32280,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 32280,
+      "kind": "don"
+    },
+    {
+      "t_ms": 33733,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 35502,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 35537,
+      "kind": "don"
+    },
+    {
+      "t_ms": 37054,
+      "kind": "don"
+    },
+    {
+      "t_ms": 37054,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 38550,
+      "kind": "don"
+    },
+    {
+      "t_ms": 38550,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 39335,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 40348,
+      "kind": "don"
+    },
+    {
+      "t_ms": 40750,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 42918,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 42918,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43091,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43091,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 43259,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43275,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 43424,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 43424,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43575,
+      "kind": "ka"
+    },
+    {
+      "t_ms": 43592,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43743,
+      "kind": "don"
+    },
+    {
+      "t_ms": 43760,
+      "kind": "ka"
+    }
+  ]
+}

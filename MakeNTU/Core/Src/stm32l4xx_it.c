@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 
 #include "stm32l4xx_hal_spi.h"
+#include "app_ws2812.h"
 
 /* USER CODE END Includes */
 
@@ -250,6 +251,13 @@ void DMA1_Channel1_IRQHandler(void)
   SET_BIT(ADC1->CFGR, ADC_CFGR_DMACFG);
   HAL_DMA_IRQHandler(&hdma_adc1);
 }
+
+#if (APP_USE_WS2812_JDG != 0) && (APP_WS2812_USE_PWM_DMA != 0)
+void DMA1_Channel5_IRQHandler(void)
+{
+  App_Ws2812_PwmDmaIrqHandler();
+}
+#endif
 
 void EXTI1_IRQHandler(void)
 {

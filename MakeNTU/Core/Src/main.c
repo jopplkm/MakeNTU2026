@@ -28,6 +28,7 @@
 #if APP_USE_WIFI
 #include "wifi.h"
 #endif
+#include "app_ws2812.h"
 
 /* USER CODE END Includes */
 
@@ -110,6 +111,7 @@ static void App_AdcTriggerTimer_InitStart(void);
 static void App_DebugUart1(const char *msg);
 static WIFI_Status_t App_TryWifiConnect(void);
 static WIFI_Status_t App_WifiSendAll(const uint8_t *buf, uint16_t len, uint32_t timeout_ms);
+static void App_WifiPollPcRx(void);
 #endif
 
 /* USER CODE END PFP */
@@ -193,6 +195,120 @@ static WIFI_Status_t App_WifiSendAll(const uint8_t *buf, uint16_t len, uint32_t 
   }
   s_wifi_sent = sent_total;
   return WIFI_STATUS_OK;
+}
+
+static char s_pc_rxbuf[96];
+static size_t s_pc_rxlen = 0U;
+
+static void App_ParsePcCmdLine(char *line)
+{
+  while ((*line == ' ') || (*line == '\t'))
+  {
+    line++;
+  }
+  if (strncmp(line, "jdg:", 4) != 0)
+  {
+#if APP_PC_RX_LOG_UART
+    if (line[0] != '\0')
+    {
+      char msg[120];
+      (void)snprintf(msg, sizeof(msg), "[PC] tcp rx (not jdg): %.80s\r\n", line);
+      App_DebugUart1(msg);
+    }
+#endif
+    return;
+  }
+  line += 4;
+  while ((*line == ' ') || (*line == '\t'))
+  {
+    line++;
+  }
+  if (strncmp(line, "perfect", 7) == 0)
+  {
+#if APP_USE_WS2812_JDG
+    App_Ws2812_SetJudge("perfect");
+#endif
+    App_DebugUart1("[PC] jdg:perfect -> LED green (WS2812)\r\n");
+  }
+  else if (strncmp(line, "good", 4) == 0)
+  {
+#if APP_USE_WS2812_JDG
+    App_Ws2812_SetJudge("good");
+#endif
+    App_DebugUart1("[PC] jdg:good -> LED yellow\r\n");
+  }
+  else if ((strncmp(line, "miss", 4) == 0) || (strncmp(line, "bad", 3) == 0))
+  {
+#if APP_USE_WS2812_JDG
+    App_Ws2812_SetJudge("miss");
+#endif
+    App_DebugUart1("[PC] jdg:miss -> LED red\r\n");
+  }
+  else if (strncmp(line, "off", 3) == 0)
+  {
+#if APP_USE_WS2812_JDG
+    App_Ws2812_SetJudge("off");
+#endif
+    App_DebugUart1("[PC] jdg:off -> LED clear\r\n");
+  }
+  else
+  {
+    char msg[120];
+    (void)snprintf(msg, sizeof(msg), "[PC] jdg:? unknown arg: %.48s\r\n", line);
+    App_DebugUart1(msg);
+  }
+}
+
+static void App_AppendPcRxByte(uint8_t b)
+{
+  const char c = (char)b;
+  if ((c == '\r') || (c == '\n'))
+  {
+    if (s_pc_rxlen < sizeof(s_pc_rxbuf))
+    {
+      s_pc_rxbuf[s_pc_rxlen] = '\0';
+    }
+    else
+    {
+      s_pc_rxbuf[sizeof(s_pc_rxbuf) - 1U] = '\0';
+    }
+    if (s_pc_rxlen > 0U)
+    {
+      App_ParsePcCmdLine(s_pc_rxbuf);
+    }
+    s_pc_rxlen = 0U;
+    return;
+  }
+  if (s_pc_rxlen + 1U < sizeof(s_pc_rxbuf))
+  {
+    s_pc_rxbuf[s_pc_rxlen++] = (char)c;
+  }
+  else
+  {
+    s_pc_rxlen = 0U;
+  }
+}
+
+static void App_WifiPollPcRx(void)
+{
+  if (s_wifi_socket < 0)
+  {
+    return;
+  }
+  for (;;)
+  {
+    uint8_t chunk[48];
+    uint16_t n = 0U;
+    const WIFI_Status_t st = WIFI_ReceiveData((uint32_t)s_wifi_socket, chunk, (uint16_t)sizeof(chunk), &n, 1U);
+    if ((st != WIFI_STATUS_OK) || (n == 0U))
+    {
+      break;
+    }
+    for (uint16_t i = 0U; i < n; i++)
+    {
+      App_AppendPcRxByte(chunk[i]);
+    }
+  }
 }
 #endif
 
@@ -646,6 +762,8 @@ int main(void)
     }
   }
 
+  App_Ws2812_Init();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -658,6 +776,12 @@ int main(void)
 
     static uint32_t last_tx_ms;
     const uint32_t now = HAL_GetTick();
+#if APP_USE_WIFI
+    App_WifiPollPcRx();
+#endif
+#if APP_USE_WS2812_JDG
+    App_Ws2812_Tick(now);
+#endif
     if (s_calib_request != 0U)
     {
       s_calib_request = 0U;

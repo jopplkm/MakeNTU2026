@@ -246,6 +246,27 @@ void Error_Handler(void);
 /** Merge brief dips into same effort event (high->low->high). */
 #define APP_EMG_EVENT_END_GAP_MS 100U
 
+/**
+ * PC → MCU on the same WiFi TCP socket: text lines "jdg:perfect\\r\\n", "jdg:good\\r\\n", "jdg:miss\\r\\n".
+ * WS2812 on ARD_D5 (PB4): APP_WS2812_USE_PWM_DMA=1 uses TIM3_CH1 + TIM3_UP DMA (recommended).
+ * =0 uses GPIO bit-bang. ARD_D4 is TIM2 — do not wire WS2812 DIN to D4.
+ */
+#define APP_USE_WS2812_JDG 1
+/** 0 = GPIO bit-bang (default, works with PB4 as D5). 1 = TIM3+DMA (experimental). */
+#define APP_WS2812_USE_PWM_DMA 0
+#define APP_WS2812_NUM_LEDS 19U
+#define APP_WS2812_GPIO_Port ARD_D5_GPIO_Port
+#define APP_WS2812_GPIO_Pin ARD_D5_Pin
+#define APP_WS2812_HOLD_MS 450U
+/** Bit-bang NOP tuning @ ~80 MHz SYSCLK. All-white → T0H too long: decrease T0H; wrong colors → try BYTE_ORDER or ±2 on T1H. */
+#define APP_WS2812_TIM_T0H_NOP 14U
+#define APP_WS2812_TIM_T1H_NOP 44U
+#define APP_WS2812_TIM_TLOW_NOP 18U
+/** 0 = standard WS2812 GRB wire order; set 1 if your strip shows swapped colors */
+#define APP_WS2812_BYTE_ORDER_RGB 0
+/** 1 = print PC→MCU TCP text lines on UART1 (ST-Link VCP) for debugging */
+#define APP_PC_RX_LOG_UART 1
+
 extern ADC_HandleTypeDef hadc1;
 extern DMA_HandleTypeDef hdma_adc1;
 

@@ -5,6 +5,8 @@ Taiko-style rhythm game: STM32 WiFi/TCP drum lines:
   hit:a1 ...  → blue KA (Arduino A1 / PC4 ADC1_IN13)
 Legacy: hit:1 → don ; hit:2 or hit:ka → ka (optional).
 
+PC → MCU (same TCP socket): lines `jdg:perfect\\r\\n`, `jdg:good\\r\\n`, `jdg:miss\\r\\n` for WS2812 (see main.h / app_ws2812).
+
 Run Python first, then power/connect the board (same port as APP_WIFI_REMOTE_PORT).
 
   pip install -r requirements_taiko.txt
@@ -22,6 +24,7 @@ import re
 import socket
 import sys
 import threading
+from typing import Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +65,31 @@ DEMO_CHART: list[tuple[int, str]] = [
 
 SONG_LENGTH_MS_DEFAULT = 14500
 
+
+def _make_game_fonts() -> tuple[pygame.font.Font, pygame.font.Font]:
+    """
+    Title/help text mixes English and Chinese. Consolas has no CJK glyphs → tofu boxes.
+    Try common Windows / CJK-capable fonts first; fall back to default bitmap font.
+    """
+    families = [
+        "microsoftyahei",
+        "microsoft yahei",
+        "microsoftjhenghei",
+        "microsoft jhenghei",
+        "msyh",
+        "simhei",
+        "simsun",
+        "notosanscjksc",
+        "noto sans cjk sc",
+        "pingfang sc",
+        "consolas",
+    ]
+    return (
+        pygame.font.SysFont(families, 26),
+        pygame.font.SysFont(families, 40, bold=True),
+    )
+
+
 # Judgement (ms)
 WINDOW_PERFECT = 70
 WINDOW_GOOD = 130
@@ -72,6 +100,40 @@ JUDGE_X = 220
 PIXELS_PER_MS = 0.42
 NOTE_RADIUS = 28
 
+# Hit timing traces (fixed screen x at strike; fade so you see early/late vs judge line)
+HIT_TRACE_LIFETIME_MS = 2400
+HIT_TRACE_MAX = 48
+HIT_TRACE_LABEL_LINE = 17
+HIT_TRACE_LABEL_MARGIN = 5
+
+# Same TCP socket as STM32 client: PC sends judgement lines for WS2812 on MCU.
+_tcp_client_lock = threading.Lock()
+_tcp_client_sock: Optional[socket.socket] = None
+_suppress_jdg_out = False
+_tcp_xfer_debug = False
+
+
+def tcp_send_jdg(label: str) -> None:
+    """Send 'jdg:perfect|good|miss\\r\\n' to board (same connection as hit lines)."""
+    if _suppress_jdg_out:
+        return
+    if label not in ("perfect", "good", "miss"):
+        return
+    line = f"jdg:{label}\r\n".encode("ascii", errors="replace")
+    with _tcp_client_lock:
+        c = _tcp_client_sock
+    if c is None:
+        if _tcp_xfer_debug:
+            print(f"[taiko-tcp] jdg:{label} (no client connected — not sent)", flush=True)
+        return
+    try:
+        c.sendall(line)
+        if _tcp_xfer_debug:
+            print(f"[taiko-tcp] >> sent to STM32: {line.decode('ascii', errors='replace').strip()}", flush=True)
+    except OSError as e:
+        if _tcp_xfer_debug:
+            print(f"[taiko-tcp] send jdg failed: {e}", flush=True)
+
 
 @dataclass
 class Note:
@@ -81,8 +143,19 @@ class Note:
 
 
 @dataclass
+class HitTrace:
+    """One successful hit: where the note center was on screen vs judge line (JUDGE_X)."""
+
+    x: float
+    err_ms: int  # chart_ms - t_hit at strike: negative = early, positive = late
+    kind: str
+    born: int  # pygame.time.get_ticks()
+
+
+@dataclass
 class GameState:
     notes: list[Note] = field(default_factory=list)
+    hit_traces: list[HitTrace] = field(default_factory=list)
     t0: int = 0
     score: int = 0
     combo: int = 0
@@ -100,6 +173,7 @@ def tcp_listener(
     stop_event: threading.Event,
     tcp_debug: bool = False,
 ) -> None:
+    global _tcp_client_sock
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -121,11 +195,15 @@ def tcp_listener(
             except OSError:
                 break
             buf = b""
+            with _tcp_client_lock:
+                _tcp_client_sock = conn
             print("[taiko] STM32 TCP client connected.", flush=True)
         assert conn is not None
         try:
             chunk = conn.recv(4096)
             if not chunk:
+                with _tcp_client_lock:
+                    _tcp_client_sock = None
                 conn.close()
                 conn = None
                 continue
@@ -136,14 +214,16 @@ def tcp_listener(
                 text = line.decode("utf-8", errors="replace").strip()
                 if tcp_debug and text:
                     lw = text.lower()
-                    if lw.startswith("hit") or lw.startswith("evt"):
-                        print(f"[taiko-tcp] {text}", flush=True)
+                    if lw.startswith("hit") or lw.startswith("evt") or lw.startswith("jdg"):
+                        print(f"[taiko-tcp] << {text}", flush=True)
                 sk = strike_from_stm32_hit_line(text) if text else None
                 if sk:
                     hit_queue.put(sk)
         except TimeoutError:
             continue
         except OSError:
+            with _tcp_client_lock:
+                _tcp_client_sock = None
             try:
                 conn.close()
             except OSError:
@@ -188,10 +268,19 @@ def try_judge(
     state.score += pts + state.combo * 2
     state.combo += 1
     state.max_combo = max(state.max_combo, state.combo)
+    # Fixed-screen mark: note center x at strike (same as scroll formula at that instant).
+    strike_x = JUDGE_X + (best.t_hit - now_ms) * PIXELS_PER_MS
+    err_ms = now_ms - best.t_hit
+    born = pygame.time.get_ticks()
+    state.hit_traces.append(HitTrace(x=strike_x, err_ms=err_ms, kind=best.kind, born=born))
+    if len(state.hit_traces) > HIT_TRACE_MAX:
+        state.hit_traces = state.hit_traces[-HIT_TRACE_MAX:]
     return label
 
 
-def update_misses(state: GameState, now_ms: int) -> None:
+def update_misses(state: GameState, now_ms: int) -> bool:
+    """Return True if at least one note became miss this tick."""
+    any_miss = False
     for n in state.notes:
         if n.hit_result is not None:
             continue
@@ -199,6 +288,8 @@ def update_misses(state: GameState, now_ms: int) -> None:
             n.hit_result = "miss"
             state.counts["miss"] += 1
             state.combo = 0
+            any_miss = True
+    return any_miss
 
 
 def draw_game(
@@ -230,6 +321,59 @@ def draw_game(
             color = tuple(c // 3 for c in color)
         pygame.draw.circle(screen, color, (x, cy), NOTE_RADIUS)
         pygame.draw.circle(screen, edge, (x, cy), NOTE_RADIUS, 3)
+
+    cy = h // 2
+    wall = pygame.time.get_ticks()
+    state.hit_traces = [t for t in state.hit_traces if wall - t.born < HIT_TRACE_LIFETIME_MS]
+    for t in state.hit_traces:
+        age = wall - t.born
+        fade = max(0.0, 1.0 - age / float(HIT_TRACE_LIFETIME_MS))
+        ix = int(round(t.x))
+        if t.kind == "don":
+            rgb = (255, 140, 140)
+        else:
+            rgb = (140, 190, 255)
+        col = tuple(min(255, int(c * (0.55 + 0.45 * fade))) for c in rgb)
+        pygame.draw.line(screen, col, (JUDGE_X, cy), (ix, cy), max(2, int(3 * fade + 0.5)))
+        pygame.draw.circle(screen, col, (ix, cy), max(4, int(9 * fade + 0.5)), 2)
+
+    # Ms labels: stack / nudge so nearby hits do not print on top of each other.
+    base_y = min(h - 22, cy + NOTE_RADIUS + 8)
+    label_rows: list[tuple[int, int, pygame.Surface]] = []
+    for t in state.hit_traces:
+        age = wall - t.born
+        fade = max(0.0, 1.0 - age / float(HIT_TRACE_LIFETIME_MS))
+        if fade <= 0.15:
+            continue
+        ix = int(round(t.x))
+        if t.kind == "don":
+            rgb = (255, 140, 140)
+        else:
+            rgb = (140, 190, 255)
+        col = tuple(min(255, int(c * (0.55 + 0.45 * fade))) for c in rgb)
+        tag = font.render(f"{t.err_ms:+d} ms", True, col)
+        label_rows.append((t.born, ix, tag))
+
+    label_rows.sort(key=lambda row: -row[0])
+    placed: list[pygame.Rect] = []
+    for _born, ix, tag in label_rows:
+        tw, th = tag.get_size()
+        tx = max(8, min(w - tw - 8, ix - tw // 2))
+        ty = base_y
+        for _ in range(48):
+            hitbox = pygame.Rect(tx, ty, tw, th).inflate(
+                HIT_TRACE_LABEL_MARGIN * 2, HIT_TRACE_LABEL_MARGIN
+            )
+            if not any(hitbox.colliderect(p) for p in placed):
+                placed.append(hitbox)
+                screen.blit(tag, (tx, ty))
+                break
+            ty -= HIT_TRACE_LABEL_LINE
+            if ty < cy - 100:
+                tx = min(w - tw - 8, tx + 24)
+                ty = base_y
+        else:
+            screen.blit(tag, (tx, max(cy - 100, ty)))
 
     hud_y = 16
     screen.blit(big_font.render(f"Score {state.score}", True, (240, 240, 245)), (20, hud_y))
@@ -288,7 +432,12 @@ def main() -> None:
     parser.add_argument(
         "--tcp-debug",
         action="store_true",
-        help="Log hit:/evt: lines from the board to stderr (verify TCP + newline parsing)",
+        help="Log hit:/evt: from board + jdg: lines sent to board (PC→STM32) on stderr",
+    )
+    parser.add_argument(
+        "--no-jdg-out",
+        action="store_true",
+        help="Do not send jdg: lines to STM32 (WS2812 feedback disabled on PC side)",
     )
     parser.add_argument(
         "--title-autostart-sec",
@@ -298,6 +447,10 @@ def main() -> None:
         help="Optional: auto-begin chart after SEC seconds on title (default 0 = never; use demos only)",
     )
     args = parser.parse_args()
+
+    global _suppress_jdg_out, _tcp_xfer_debug
+    _suppress_jdg_out = bool(args.no_jdg_out)
+    _tcp_xfer_debug = bool(args.tcp_debug)
 
     chart_notes: list[tuple[int, str]] = list(DEMO_CHART)
     song_length_ms = SONG_LENGTH_MS_DEFAULT
@@ -341,8 +494,7 @@ def main() -> None:
     pygame.display.set_caption("MakeNTU Taiko — hit:a0 / hit:a1 + Space/X")
     screen = pygame.display.set_mode((960, 540))
     clock = pygame.time.Clock()
-    font = pygame.font.SysFont("consolas", 26)
-    big_font = pygame.font.SysFont("consolas", 40, bold=True)
+    font, big_font = _make_game_fonts()
 
     hit_queue: queue.Queue[str] = queue.Queue()
     stop_tcp = threading.Event()
@@ -423,18 +575,15 @@ def main() -> None:
             screen.fill((20, 18, 30))
             lines = [
                 f"Chart: {chart_label}",
-                "校正：可先按 STM32 USER（約10秒放輕鬆）；不必等連上電腦，Wi‑Fi／TCP 不影響校正。",
-                "STM32: hit:a0→紅 don ｜ hit:a1→藍 ka ｜鍵盤 Space / X 也可",
-                "請先對此視窗點一下，再按鍵或滑鼠左鍵開始遊戲（預設不會自動開始）。",
-                "",
-                (
-                    "偵錯可開 --tcp-debug 看板子行；自動開譜可加 --title-autostart-sec 秒（試玩）。"
-                    if args.title_autostart_sec <= 0.0
-                    else f"已設 --title-autostart-sec {args.title_autostart_sec}s 會自動開譜"
-                ),
-                "",
-                f"TCP listen {args.host}:{args.port}  |  '--no-tcp' = 不接板子",
+                "點視窗後按鍵或左鍵開始  ·  a0 don / a1 ka / Space / X",
             ]
+            if args.title_autostart_sec > 0.0:
+                lines.append(f"{args.title_autostart_sec:g}s 後自動開始")
+            lines.append(
+                f"TCP {args.host}:{args.port}"
+                if not args.no_tcp
+                else "TCP 關閉（僅鍵盤）"
+            )
             y_line = 70
             for line in lines:
                 if not line.strip():
@@ -463,6 +612,7 @@ def main() -> None:
                 hit_flash_ms = 18
                 last_judge = j
                 judge_until_ms = now_wall + 380
+                tcp_send_jdg(j)
             else:
                 hit_flash_ms = 6
                 # No playable note in window (do not confuse with timing miss).
@@ -483,6 +633,7 @@ def main() -> None:
                         last_judge = j
                         judge_until_ms = now_wall + 380
                         hit_flash_ms = 18
+                        tcp_send_jdg(j)
                     else:
                         hit_flash_ms = 8
                         judge_until_ms = now_wall + 180
@@ -492,11 +643,16 @@ def main() -> None:
                         last_judge = j
                         judge_until_ms = now_wall + 380
                         hit_flash_ms = 18
+                        tcp_send_jdg(j)
                     else:
                         hit_flash_ms = 8
                         judge_until_ms = now_wall + 180
 
-        update_misses(state, chart_ms)
+        if update_misses(state, chart_ms):
+            last_judge = "miss"
+            judge_until_ms = now_wall + 380
+            hit_flash_ms = 14
+            tcp_send_jdg("miss")
 
         if now_wall > judge_until_ms:
             last_judge = None
